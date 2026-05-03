@@ -1893,6 +1893,8 @@
                 'if (-not \$BaseDir) { \$BaseDir = "." }',
                 '\$wshell = New-Object -ComObject WScript.Shell',
                 '\$newShortcuts = @()',
+                '\$desktopFolder = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Desktop)',
+                '\$startMenuFolder = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Programs)',
                 '',
                 'function Process-Video {',
                 '    param([string]\$sourcePath, [string]\$targetPath, [array]\$cuts, [array]\$markers, [bool]\$flipped)',
@@ -1963,7 +1965,7 @@
                 '        # Use braces for variables in vf to avoid ParserError with colons',
                 '        \$vf = "\$transpose"',
                 '        if (\$flipped) { \$vf += "hflip," }',
-                '        \$vf += "scale=w=\${maxW}:h=\${maxH}:force_original_aspect_ratio=decrease,pad=\${maxW}:\${maxH}:(ow-iw)/2:(oh-ih)/2"',
+                '        \$vf += "scale=w=\$($maxW):h=\$($maxH):force_original_aspect_ratio=decrease,pad=\$($maxW):\$($maxH):(ow-iw)/2:(oh-ih)/2"',
                 '        ',
                 '        \$dur = (\$seg.end - \$seg.start).ToString("F3")',
                 '        Write-Host "  > Encoding segment \$segIndex: \$(\$seg.start) to \$(\$seg.end) (Rot: \$(\$seg.rotation))"',
@@ -2251,19 +2253,27 @@
                 const wantRoot = (selectionType === 'root-sc' || selectionType === 'both-sc');
                 const wantSub = (selectionType === 'subfolder-sc' || selectionType === 'both-sc');
 
+                // Desktop
+                scriptLines.push(`    Manage-Shortcut -folderPath \$desktopFolder -videoName '${escapedVideoName}' -targetPath \$targetPath -shouldExist ${wantRoot ? '$true' : '$false'}`);
+
+                // Start Menu
+                scriptLines.push(`    Manage-Shortcut -folderPath \$startMenuFolder -videoName '${escapedVideoName}' -targetPath \$targetPath -shouldExist ${wantRoot ? '$true' : '$false'}`);
+
                 // Root location
                 scriptLines.push(`    Manage-Shortcut -folderPath \$rootScFolder -videoName '${escapedVideoName}' -targetPath \$targetPath -shouldExist ${wantRoot ? '$true' : '$false'}`);
 
                 // Subfolder location
-                let scDirPath;
+                let scDirPath = '\$BaseDir';
                 const projectPathToUse = escapedTargetProjectPath || escapedProjectPath;
                 if (projectPathToUse) {
-                    scDirPath = `Join-Path -Path \"$BaseDir\" -ChildPath '${projectPathToUse}'`;
-                    scDirPath = `Join-Path -Path (${scDirPath}) -ChildPath 'sc'`;
-                } else {
-                    scDirPath = 'Join-Path -Path \"$BaseDir\" -ChildPath \'sc\'';
+                    scDirPath = `(Join-Path -Path ${scDirPath} -ChildPath '${projectPathToUse}')`;
                 }
-                scriptLines.push(`    Manage-Shortcut -folderPath (${scDirPath}) -videoName '${escapedVideoName}' -targetPath \$targetPath -shouldExist ${wantSub ? '$true' : '$false'}`);
+                if (escapedSubfolder) {
+                    scDirPath = `(Join-Path -Path ${scDirPath} -ChildPath '${escapedSubfolder}')`;
+                }
+                scDirPath = `(Join-Path -Path ${scDirPath} -ChildPath 'sc')`;
+
+                scriptLines.push(`    Manage-Shortcut -folderPath ${scDirPath} -videoName '${escapedVideoName}' -targetPath \$targetPath -shouldExist ${wantSub ? '$true' : '$false'}`);
 
                 scriptLines.push('');
             });
@@ -2320,23 +2330,29 @@
                 const initiallyInSubfolder = initial.type === 'subfolder-sc' || initial.type === 'both-sc';
                 const currentlyInSubfolder = current && (current.type === 'subfolder-sc' || current.type === 'both-sc');
                 if (initiallyInSubfolder && !currentlyInSubfolder) {
-                    let subfolderScPath;
-                    if (escapedProjectPath) {
-                        subfolderScPath = `(Join-Path -Path (Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc')`;
-                    } else {
-                        subfolderScPath = '(Join-Path -Path \"$BaseDir\" -ChildPath \'sc\')';
-                    }
-                    const fullScPath = `(Join-Path -Path ${subfolderScPath} -ChildPath ('${escapedVideoName}' + '.lnk'))`;
-                    const logPath = (escapedProjectPath ? escapedProjectPath + '\\' : '') + escapedVideoName;
-                    deletions.push(`if (Test-Path -LiteralPath "${fullScPath}") { Remove-Item -LiteralPath "${fullScPath}"; Write-Host "Deleted subfolder shortcut: ${logPath}" }`);
+                    let subPath = '\$BaseDir';
+                    if (escapedProjectPath) subPath = `(Join-Path -Path ${subPath} -ChildPath '${escapedProjectPath}')`;
+                    const escapedSubfolder = escapePSString(initial.subfolder || '');
+                    if (escapedSubfolder) subPath = `(Join-Path -Path ${subPath} -ChildPath '${escapedSubfolder}')`;
+                    subPath = `(Join-Path -Path ${subPath} -ChildPath 'sc')`;
+
+                    const fullScPath = `Join-Path -Path ${subPath} -ChildPath ('${escapedVideoName}' + '.lnk')`;
+                    const logPath = (escapedProjectPath ? escapedProjectPath + '\\' : '') + (escapedSubfolder ? escapedSubfolder + '\\' : '') + escapedVideoName;
+                    deletions.push(`if (Test-Path -LiteralPath (${fullScPath})) { Remove-Item -LiteralPath (${fullScPath}); Write-Host "Deleted subfolder shortcut: ${logPath}" }`);
                 }
 
                 const initiallyInRoot = initial.type === 'root-sc' || initial.type === 'both-sc';
                 const currentlyInRoot = current && (current.type === 'root-sc' || current.type === 'both-sc');
                 if (initiallyInRoot && !currentlyInRoot) {
                     const rootScFolder = `(Join-Path -Path \"$BaseDir\" -ChildPath 'sc')`;
-                    const fullScPath = `(Join-Path -Path ${rootScFolder} -ChildPath ('${escapedVideoName}' + '.lnk'))`;
-                    deletions.push(`if (Test-Path -LiteralPath "${fullScPath}") { Remove-Item -LiteralPath "${fullScPath}"; Write-Host "Deleted root shortcut: ${escapedVideoName}" }`);
+                    const fullScPath = `Join-Path -Path ${rootScFolder} -ChildPath ('${escapedVideoName}' + '.lnk')`;
+                    deletions.push(`if (Test-Path -LiteralPath (${fullScPath})) { Remove-Item -LiteralPath (${fullScPath}); Write-Host "Deleted root shortcut: ${escapedVideoName}" }`);
+
+                    const desktopScPath = `Join-Path -Path \$desktopFolder -ChildPath ('${escapedVideoName}' + '.lnk')`;
+                    deletions.push(`if (Test-Path -LiteralPath (${desktopScPath})) { Remove-Item -LiteralPath (${desktopScPath}); Write-Host "Deleted desktop shortcut: ${escapedVideoName}" }`);
+
+                    const startMenuScPath = `Join-Path -Path \$startMenuFolder -ChildPath ('${escapedVideoName}' + '.lnk')`;
+                    deletions.push(`if (Test-Path -LiteralPath (${startMenuScPath})) { Remove-Item -LiteralPath (${startMenuScPath}); Write-Host "Deleted start menu shortcut: ${escapedVideoName}" }`);
                 }
             });
 
@@ -3108,7 +3124,7 @@
                                 type: initialShortcutType || '', rotation: rotation, flipped: flipped
                             };
                             shortcutSelections.set(key, selectionData);
-                            initialShortcutSelections.set(key, { type: initialShortcutType, rotation: rotation, flipped: flipped });
+                            initialShortcutSelections.set(key, { type: initialShortcutType, rotation: rotation, flipped: flipped, subfolder: videoFile.subfolder });
                         }
 
                         canvasElements.push(rowDiv);
@@ -3282,7 +3298,7 @@
                                         rotation: rotation,
                                         flipped: flipped
                                     });
-                                    initialShortcutSelections.set(key, { type: 'subfolder-sc', rotation: rotation, flipped: flipped });
+                                    initialShortcutSelections.set(key, { type: 'subfolder-sc', rotation: rotation, flipped: flipped, subfolder: '' });
                                 }
                             }
 
